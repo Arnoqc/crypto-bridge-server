@@ -445,6 +445,16 @@ app.post('/arkham-webhook', (req, res) => {
   try {
     console.log(`[${new Date().toISOString()}] Arkham webhook received:`, JSON.stringify(req.body, null, 2));
     
+    // Store raw webhook for debugging (keep last 10)
+    if (!global.rawWebhooks) global.rawWebhooks = [];
+    global.rawWebhooks.unshift({
+      timestamp: Date.now(),
+      payload: req.body
+    });
+    if (global.rawWebhooks.length > 10) {
+      global.rawWebhooks = global.rawWebhooks.slice(0, 10);
+    }
+    
     // Process the webhook data
     const event = processArkhamEvent(req.body);
     
@@ -474,6 +484,18 @@ app.post('/arkham-webhook', (req, res) => {
       message: 'Internal webhook processing error' 
     });
   }
+});
+
+// Raw webhook debug endpoint
+app.get('/raw-webhooks', (req, res) => {
+  res.json({
+    totalWebhooks: global.rawWebhooks ? global.rawWebhooks.length : 0,
+    webhooks: (global.rawWebhooks || []).map(w => ({
+      timestamp: w.timestamp,
+      ago: Math.floor((Date.now() - w.timestamp) / 1000 / 60) + ' minutes ago',
+      payload: w.payload
+    }))
+  });
 });
 
 // Arkham events endpoint (for debugging)
@@ -568,7 +590,8 @@ app.use((req, res) => {
       '/cache', 
       '/arkham-webhook', 
       '/arkham-events', 
-      '/test-webhook'
+      '/test-webhook',
+      '/raw-webhooks'
     ]
   });
 });
