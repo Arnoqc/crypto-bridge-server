@@ -26,6 +26,10 @@ let lastResetDate = new Date().toDateString();
 let arkhamEvents = [];
 const MAX_ARKHAM_EVENTS = 100; // Keep last 100 events
 
+// Store raw webhooks for debugging
+let rawWebhooks = [];
+const MAX_RAW_WEBHOOKS = 10;
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Increase limit for webhook payloads
@@ -446,13 +450,12 @@ app.post('/arkham-webhook', (req, res) => {
     console.log(`[${new Date().toISOString()}] Arkham webhook received:`, JSON.stringify(req.body, null, 2));
     
     // Store raw webhook for debugging (keep last 10)
-    if (!global.rawWebhooks) global.rawWebhooks = [];
-    global.rawWebhooks.unshift({
+    rawWebhooks.unshift({
       timestamp: Date.now(),
       payload: req.body
     });
-    if (global.rawWebhooks.length > 10) {
-      global.rawWebhooks = global.rawWebhooks.slice(0, 10);
+    if (rawWebhooks.length > MAX_RAW_WEBHOOKS) {
+      rawWebhooks = rawWebhooks.slice(0, MAX_RAW_WEBHOOKS);
     }
     
     // Process the webhook data
@@ -489,8 +492,8 @@ app.post('/arkham-webhook', (req, res) => {
 // Raw webhook debug endpoint
 app.get('/raw-webhooks', (req, res) => {
   res.json({
-    totalWebhooks: global.rawWebhooks ? global.rawWebhooks.length : 0,
-    webhooks: (global.rawWebhooks || []).map(w => ({
+    totalWebhooks: rawWebhooks.length,
+    webhooks: rawWebhooks.map(w => ({
       timestamp: w.timestamp,
       ago: Math.floor((Date.now() - w.timestamp) / 1000 / 60) + ' minutes ago',
       payload: w.payload
