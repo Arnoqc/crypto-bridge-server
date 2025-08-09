@@ -155,8 +155,17 @@ function addArkhamEvent(event) {
 }
 
 function getRecentArkhamEvents(hoursBack = 24) {
-  const cutoffTime = Math.floor(Date.now() / 1000) - (hoursBack * 3600);
-  return arkhamEvents.filter(event => event.timestamp > cutoffTime);
+  try {
+    if (!arkhamEvents || !Array.isArray(arkhamEvents)) {
+      arkhamEvents = [];
+      return [];
+    }
+    const cutoffTime = Math.floor(Date.now() / 1000) - (hoursBack * 3600);
+    return arkhamEvents.filter(event => event && event.timestamp && event.timestamp > cutoffTime);
+  } catch (error) {
+    console.error('Error in getRecentArkhamEvents:', error);
+    return [];
+  }
 }
 
 function formatForPineScript(articles, requestSymbols, includeArkham = true) {
