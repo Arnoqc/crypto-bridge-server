@@ -155,17 +155,8 @@ function addArkhamEvent(event) {
 }
 
 function getRecentArkhamEvents(hoursBack = 24) {
-  try {
-    if (!arkhamEvents || !Array.isArray(arkhamEvents)) {
-      arkhamEvents = [];
-      return [];
-    }
-    const cutoffTime = Math.floor(Date.now() / 1000) - (hoursBack * 3600);
-    return arkhamEvents.filter(event => event && event.timestamp && event.timestamp > cutoffTime);
-  } catch (error) {
-    console.error('Error in getRecentArkhamEvents:', error);
-    return [];
-  }
+  const cutoffTime = Math.floor(Date.now() / 1000) - (hoursBack * 3600);
+  return arkhamEvents.filter(event => event.timestamp > cutoffTime);
 }
 
 function formatForPineScript(articles, requestSymbols, includeArkham = true) {
@@ -510,6 +501,57 @@ app.get('/raw-webhooks', (req, res) => {
   });
 });
 
+// TradingView seed endpoint for PineScript integration
+app.get('/tradingview-seed', async (req, res) => {
+  try {
+    // Extract parameters from TradingView request
+    const { symbols, keywords, timeframe } = req.query;
+    
+    console.log(`[${new Date().toISOString()}] TradingView seed request: symbols=${symbols}, keywords=${keywords}`);
+    
+    // Use existing crypto-news logic but format for TradingView
+    const cacheKey = generateCacheKey(symbols, keywords, timeframe);
+    
+    // Check cache first
+    const cachedData = cache.get(cacheKey);
+    if (isValidCacheEntry(cachedData)) {
+      console.log(`[${new Date().toISOString()}] Serving cached data to TradingView`);
+      return res.type('text/plain').send(cachedData.data || '');
+    }
+
+    // Fetch fresh data
+    let articles = [];
+    try {
+      articles = await fetchNewsFromAPI(symbols, keywords, timeframe);
+    } catch (apiError) {
+      console.error(`[${new Date().toISOString()}] API failed for TradingView request:`, apiError.message);
+      // Return cached data or empty if no cache
+      if (cachedData && cachedData.data) {
+        return res.type('text/plain').send(cachedData.data);
+      }
+    }
+
+    // Format data for PineScript (includes both news and Arkham events)
+    const formattedData = formatForPineScript(articles, symbols, true);
+    
+    // Update cache
+    cache.set(cacheKey, {
+      data: formattedData,
+      articles: JSON.stringify(articles),
+      timestamp: Date.now()
+    });
+
+    console.log(`[${new Date().toISOString()}] Serving fresh data to TradingView: ${formattedData ? formattedData.split('|').length : 0} events`);
+    
+    // Return data in format PineScript can parse
+    res.type('text/plain').send(formattedData || '');
+
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] TradingView endpoint error:`, error);
+    res.type('text/plain').send(''); // Return empty string on error
+  }
+});
+
 // Arkham events endpoint (for debugging)
 app.get('/arkham-events', (req, res) => {
   const { hours } = req.query;
@@ -603,7 +645,8 @@ app.use((req, res) => {
       '/arkham-webhook', 
       '/arkham-events', 
       '/test-webhook',
-      '/raw-webhooks'
+      '/raw-webhooks',
+      '/tradingview-seed'
     ]
   });
 });
