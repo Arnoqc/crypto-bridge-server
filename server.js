@@ -480,8 +480,29 @@ app.get('/arkham-events', (req, res) => {
   });
 });
 
-// Test webhook endpoint (for manual testing)
-app.post('/test-webhook', (req, res) => {
+// Test webhook endpoint - GET version for browser testing
+app.get('/test-webhook', (req, res) => {
+  // Simulate an Arkham webhook for testing
+  const testEvent = {
+    transaction: {
+      value: 5000000, // $5M
+      token: 'BTC',
+      from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+      to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2'
+    },
+    alert: {
+      name: 'Large BTC Transfer Alert'
+    }
+  };
+  
+  const event = processArkhamEvent(testEvent);
+  if (event) {
+    addArkhamEvent(event);
+    res.json({ success: true, testEvent: event });
+  } else {
+    res.status(400).json({ success: false, message: 'Failed to process test event' });
+  }
+});
   // Simulate an Arkham webhook for testing
   const testEvent = {
     transaction: {
