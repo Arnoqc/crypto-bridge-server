@@ -14,7 +14,8 @@ const CONFIG = {
   CACHE_DURATION: 30 * 60 * 1000, // 30 minutes in milliseconds
   MAX_REQUESTS_PER_DAY: 200,
   MAX_RESULTS_PER_REQUEST: 10,
-  BASE_URL: 'https://newsdata.io/api/1/news'};
+  BASE_URL: 'https://newsdata.io/api/1/news'
+};
 
 // In-memory cache and request tracking
 let cache = new Map();
@@ -116,32 +117,31 @@ async function fetchNewsFromAPI(symbols, keywords, timeframe) {
     apikey: CONFIG.NEWSDATA_API_KEY
   });
 
-// Build crypto search query
-let searchTerms = [];
+  // Build crypto search query
+  let searchTerms = [];
 
-// Add coin symbols as search terms
-if (symbols) {
-  const coinNames = symbols.split(',').map(s => {
-    const symbol = s.trim().toUpperCase();
-    const coinName = getCoinName(symbol);
-    return `${symbol} OR ${coinName}`;
-  });
-  searchTerms.push(...coinNames);
-}
-
-// Add keywords
-if (keywords) {
-  searchTerms.push(keywords);
-}
-
-// Add general crypto terms if no specific search
-if (searchTerms.length === 0) {
-  searchTerms.push('cryptocurrency OR bitcoin OR crypto OR blockchain');
-}
-
-params.append('q', searchTerms.join(' OR '));
-params.append('category', 'business,technology');
+  // Add coin symbols as search terms
+  if (symbols) {
+    const coinNames = symbols.split(',').map(s => {
+      const symbol = s.trim().toUpperCase();
+      const coinName = getCoinName(symbol);
+      return `${symbol} OR ${coinName}`;
+    });
+    searchTerms.push(...coinNames);
   }
+
+  // Add keywords
+  if (keywords) {
+    searchTerms.push(keywords);
+  }
+
+  // Add general crypto terms if no specific search
+  if (searchTerms.length === 0) {
+    searchTerms.push('cryptocurrency OR bitcoin OR crypto OR blockchain');
+  }
+
+  params.append('q', searchTerms.join(' OR '));
+  params.append('category', 'business,technology');
 
   // Add timeframe (default to 24 hours)
   const timeframeHours = timeframe || '24';
