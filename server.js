@@ -1,4 +1,4 @@
-// Crypto News Bridge Server - Phase 1: Newsdata.io Integration
+// Crypto News Bridge Server - Phase 2: Newsdata.io + Arkham Webhook Integration
 // Designed for free hosting on Glitch.com, Railway.app, or Render.com
 
 const express = require('express');
@@ -22,9 +22,13 @@ let cache = new Map();
 let dailyRequestCount = 0;
 let lastResetDate = new Date().toDateString();
 
+// In-memory storage for Arkham webhook events
+let arkhamEvents = [];
+const MAX_ARKHAM_EVENTS = 100; // Keep last 100 events
+
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increase limit for webhook payloads
 
 // Helper Functions
 function resetDailyCountIfNeeded() {
@@ -44,45 +48,70 @@ function isValidCacheEntry(cacheEntry) {
   return cacheEntry && (Date.now() - cacheEntry.timestamp < CONFIG.CACHE_DURATION);
 }
 
-function formatForPineScript(articles, requestSymbols) {
-  if (!articles || articles.length === 0) {
-    return '';
-  }
-
+function formatForPineScript(articles, requestSymbols, includeArkham = true) {
   const events = [];
   const symbolSet = requestSymbols ? new Set(requestSymbols.toUpperCase().split(',').map(s => s.trim())) : null;
 
-  articles.forEach(article => {
-    try {
-      // Extract timestamp (convert to Unix timestamp for PineScript)
-      const publishedDate = new Date(article.pubDate || article.published_at || Date.now());
-      const timestamp = Math.floor(publishedDate.getTime() / 1000);
+  // Add news articles
+  if (articles && articles.length > 0) {
+    articles.forEach(article => {
+      try {
+        // Extract timestamp (convert to Unix timestamp for PineScript)
+        const publishedDate = new Date(article.pubDate || article.published_at || Date.now());
+        const timestamp = Math.floor(publishedDate.getTime() / 1000);
 
-      // Determine relevant symbol from title/content
-      let detectedSymbol = 'CRYPTO';
-      if (symbolSet) {
-        for (const symbol of symbolSet) {
-          const regex = new RegExp(`\\b${symbol}\\b|\\b${getCoinName(symbol)}\\b`, 'i');
-          if (regex.test(article.title + ' ' + (article.description || ''))) {
-            detectedSymbol = symbol;
-            break;
+        // Determine relevant symbol from title/content
+        let detectedSymbol = 'CRYPTO';
+        if (symbolSet) {
+          for (const symbol of symbolSet) {
+            const regex = new RegExp(`\\b${symbol}\\b|\\b${getCoinName(symbol)}\\b`, 'i');
+            if (regex.test(article.title + ' ' + (article.description || ''))) {
+              detectedSymbol = symbol;
+              break;
+            }
           }
         }
+
+        // Clean title (remove special characters that might break parsing)
+        const cleanTitle = (article.title || 'No title')
+          .replace(/[|;]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .substring(0, 100); // Limit title length
+
+        // Format: timestamp;CATEGORY;SYMBOL;Title
+        events.push(`${timestamp};NEWS;${detectedSymbol};${cleanTitle}`);
+
+      } catch (error) {
+        console.error('Error formatting article:', error);
       }
+    });
+  }
 
-      // Clean title (remove special characters that might break parsing)
-      const cleanTitle = (article.title || 'No title')
-        .replace(/[|;]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 100); // Limit title length
+  // Add recent Arkham events
+  if (includeArkham) {
+    const recentArkhamEvents = getRecentArkhamEvents(24);
+    
+    recentArkhamEvents.forEach(arkhamEvent => {
+      try {
+        // Filter by symbol if requested
+        if (symbolSet && !symbolSet.has(arkhamEvent.symbol) && arkhamEvent.symbol !== 'CRYPTO') {
+          return; // Skip this event if it doesn't match requested symbols
+        }
 
-      // Format: timestamp;CATEGORY;SYMBOL;Title
-      events.push(`${timestamp};NEWS;${detectedSymbol};${cleanTitle}`);
+        // Format: timestamp;CATEGORY;SYMBOL;Title
+        events.push(`${arkhamEvent.timestamp};ONCHAIN;${arkhamEvent.symbol};${arkhamEvent.title}`);
+      } catch (error) {
+        console.error('Error formatting Arkham event:', error);
+      }
+    });
+  }
 
-    } catch (error) {
-      console.error('Error formatting article:', error);
-    }
+  // Sort all events by timestamp (newest first)
+  events.sort((a, b) => {
+    const timestampA = parseInt(a.split(';')[0]);
+    const timestampB = parseInt(b.split(';')[0]);
+    return timestampB - timestampA;
   });
 
   return events.join('|');
@@ -102,6 +131,87 @@ function getCoinName(symbol) {
     'DOGE': 'Dogecoin'
   };
   return coinNames[symbol.toUpperCase()] || symbol;
+}
+
+// Arkham webhook event processing
+function processArkhamEvent(webhookData) {
+  try {
+    // Extract key information from Arkham webhook
+    const timestamp = Math.floor(Date.now() / 1000); // Current timestamp
+    
+    // Try to extract relevant data from webhook (format may vary)
+    let symbol = 'CRYPTO';
+    let title = 'On-chain activity detected';
+    let amount = '';
+    
+    // Parse different possible webhook formats
+    if (webhookData.transaction) {
+      const tx = webhookData.transaction;
+      
+      // Try to detect token/coin from transaction data
+      if (tx.token) {
+        symbol = tx.token.toUpperCase();
+      } else if (tx.asset) {
+        symbol = tx.asset.toUpperCase();
+      }
+      
+      // Format transaction details
+      if (tx.value && tx.from && tx.to) {
+        const value = parseFloat(tx.value);
+        if (value > 1000000) { // >$1M
+          amount = `$${(value / 1000000).toFixed(1)}M`;
+          title = `Large ${symbol} transfer: ${amount}`;
+        } else {
+          amount = `$${(value / 1000).toFixed(0)}K`;
+          title = `${symbol} transfer: ${amount}`;
+        }
+      }
+    }
+    
+    // Fallback parsing for different webhook structures
+    if (!title || title === 'On-chain activity detected') {
+      if (webhookData.alert) {
+        title = webhookData.alert.name || title;
+      }
+      if (webhookData.description) {
+        title = webhookData.description.substring(0, 100);
+      }
+    }
+    
+    // Clean title
+    title = title.replace(/[|;]/g, ' ').replace(/\s+/g, ' ').trim();
+    
+    return {
+      timestamp,
+      category: 'ONCHAIN',
+      symbol,
+      title,
+      amount,
+      raw: webhookData // Store raw data for debugging
+    };
+    
+  } catch (error) {
+    console.error('Error processing Arkham webhook:', error);
+    return null;
+  }
+}
+
+function addArkhamEvent(event) {
+  if (event) {
+    arkhamEvents.unshift(event); // Add to beginning
+    
+    // Keep only the latest events
+    if (arkhamEvents.length > MAX_ARKHAM_EVENTS) {
+      arkhamEvents = arkhamEvents.slice(0, MAX_ARKHAM_EVENTS);
+    }
+    
+    console.log(`[${new Date().toISOString()}] New Arkham event: ${event.symbol} - ${event.title}`);
+  }
+}
+
+function getRecentArkhamEvents(hoursBack = 24) {
+  const cutoffTime = Math.floor(Date.now() / 1000) - (hoursBack * 3600);
+  return arkhamEvents.filter(event => event.timestamp > cutoffTime);
 }
 
 async function fetchNewsFromAPI(symbols, keywords, timeframe) {
@@ -194,7 +304,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     dailyRequests: dailyRequestCount,
     remainingRequests: CONFIG.MAX_REQUESTS_PER_DAY - dailyRequestCount,
-    cacheEntries: cache.size
+    cacheEntries: cache.size,
+    arkhamEvents: arkhamEvents.length
   });
 });
 
@@ -217,7 +328,10 @@ app.get('/crypto-news', async (req, res) => {
     const cachedData = cache.get(cacheKey);
     if (isValidCacheEntry(cachedData)) {
       console.log(`[${new Date().toISOString()}] Cache hit for key: ${cacheKey}`);
-      return res.type('text/plain').send(cachedData.data);
+      // Even with cached news, include fresh Arkham events
+      const cachedArticles = JSON.parse(cachedData.articles || '[]');
+      const formattedData = formatForPineScript(cachedArticles, symbols, true);
+      return res.type('text/plain').send(formattedData);
     }
 
     // Fetch from API
@@ -228,23 +342,31 @@ app.get('/crypto-news', async (req, res) => {
       // If API fails and we have old cached data, use it
       if (cachedData && cachedData.data) {
         console.log(`[${new Date().toISOString()}] API failed, serving stale cache for key: ${cacheKey}`);
-        return res.type('text/plain').send(cachedData.data);
+        const cachedArticles = JSON.parse(cachedData.articles || '[]');
+        const formattedData = formatForPineScript(cachedArticles, symbols, true);
+        return res.type('text/plain').send(formattedData);
       }
       
-      // No cache available, return error
+      // No cache available, but still return Arkham events if available
       console.error(`[${new Date().toISOString()}] API failed with no cache backup:`, apiError.message);
+      const formattedData = formatForPineScript([], symbols, true);
+      if (formattedData) {
+        return res.type('text/plain').send(formattedData);
+      }
+      
       return res.status(503).json({ 
         error: 'News service temporarily unavailable',
         details: apiError.message 
       });
     }
 
-    // Format data for PineScript
-    const formattedData = formatForPineScript(articles, symbols);
+    // Format data for PineScript (includes both news and Arkham events)
+    const formattedData = formatForPineScript(articles, symbols, true);
     
     // Update cache
     cache.set(cacheKey, {
       data: formattedData,
+      articles: JSON.stringify(articles),
       timestamp: Date.now()
     });
 
@@ -254,7 +376,8 @@ app.get('/crypto-news', async (req, res) => {
       cache.delete(oldestKey);
     }
 
-    console.log(`[${new Date().toISOString()}] Served fresh data for key: ${cacheKey}, events: ${formattedData.split('|').length}`);
+    const eventCount = formattedData ? formattedData.split('|').length : 0;
+    console.log(`[${new Date().toISOString()}] Served fresh data for key: ${cacheKey}, events: ${eventCount}`);
     
     // Return formatted data as plain text for PineScript
     res.type('text/plain').send(formattedData);
@@ -273,12 +396,15 @@ app.get('/debug', async (req, res) => {
   try {
     const { symbols, keywords, timeframe } = req.query;
     const articles = await fetchNewsFromAPI(symbols, keywords, timeframe);
+    const recentArkhamEvents = getRecentArkhamEvents(24);
     
     res.json({
       requestParams: { symbols, keywords, timeframe },
-      articleCount: articles.length,
+      newsArticleCount: articles.length,
+      arkhamEventCount: recentArkhamEvents.length,
       articles: articles.slice(0, 3), // Show first 3 articles
-      formatted: formatForPineScript(articles, symbols)
+      arkhamEvents: recentArkhamEvents.slice(0, 3), // Show first 3 Arkham events
+      formatted: formatForPineScript(articles, symbols, true)
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -299,6 +425,85 @@ app.get('/cache', (req, res) => {
   });
 });
 
+// Arkham webhook endpoint
+app.post('/arkham-webhook', (req, res) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Arkham webhook received:`, JSON.stringify(req.body, null, 2));
+    
+    // Process the webhook data
+    const event = processArkhamEvent(req.body);
+    
+    if (event) {
+      addArkhamEvent(event);
+      res.status(200).json({ 
+        success: true, 
+        message: 'Webhook processed successfully',
+        event: {
+          symbol: event.symbol,
+          title: event.title,
+          timestamp: event.timestamp
+        }
+      });
+    } else {
+      console.log(`[${new Date().toISOString()}] Failed to process webhook data`);
+      res.status(400).json({ 
+        success: false, 
+        message: 'Could not process webhook data' 
+      });
+    }
+    
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Webhook error:`, error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal webhook processing error' 
+    });
+  }
+});
+
+// Arkham events endpoint (for debugging)
+app.get('/arkham-events', (req, res) => {
+  const { hours } = req.query;
+  const hoursBack = parseInt(hours) || 24;
+  const events = getRecentArkhamEvents(hoursBack);
+  
+  res.json({
+    totalEvents: arkhamEvents.length,
+    recentEvents: events.length,
+    hoursBack,
+    events: events.map(e => ({
+      timestamp: e.timestamp,
+      symbol: e.symbol,
+      title: e.title,
+      age: Math.floor((Date.now() / 1000 - e.timestamp) / 60) + ' minutes ago'
+    }))
+  });
+});
+
+// Test webhook endpoint (for manual testing)
+app.post('/test-webhook', (req, res) => {
+  // Simulate an Arkham webhook for testing
+  const testEvent = {
+    transaction: {
+      value: 5000000, // $5M
+      token: 'BTC',
+      from: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+      to: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2'
+    },
+    alert: {
+      name: 'Large BTC Transfer Alert'
+    }
+  };
+  
+  const event = processArkhamEvent(testEvent);
+  if (event) {
+    addArkhamEvent(event);
+    res.json({ success: true, testEvent: event });
+  } else {
+    res.status(400).json({ success: false, message: 'Failed to process test event' });
+  }
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Unhandled error:`, error);
@@ -312,7 +517,7 @@ app.use((error, req, res, next) => {
 app.use((req, res) => {
   res.status(404).json({ 
     error: 'Endpoint not found',
-    availableEndpoints: ['/health', '/crypto-news', '/debug', '/cache']
+    availableEndpoints: ['/health', '/crypto-news', '/debug', '/cache', '/arkham-webhook', '/arkham-events', '/test-webhook']
   });
 });
 
@@ -321,6 +526,7 @@ app.listen(PORT, () => {
   console.log(`[${new Date().toISOString()}] Crypto Bridge Server running on port ${PORT}`);
   console.log(`[${new Date().toISOString()}] Cache duration: ${CONFIG.CACHE_DURATION / 60000} minutes`);
   console.log(`[${new Date().toISOString()}] Daily request limit: ${CONFIG.MAX_REQUESTS_PER_DAY}`);
+  console.log(`[${new Date().toISOString()}] Arkham webhook endpoint: /arkham-webhook`);
 });
 
 module.exports = app;
