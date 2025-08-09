@@ -143,9 +143,13 @@ async function fetchNewsFromAPI(symbols, keywords, timeframe) {
   params.append('q', searchTerms.join(' OR '));
   params.append('category', 'business,technology');
 
-  // Add timeframe (default to 24 hours)
-  const timeframeHours = timeframe || '24';
-  params.append('timeframe', timeframeHours);
+  // Add date filtering (regular news endpoint uses 'from' instead of 'timeframe')
+  if (timeframe) {
+    const hoursAgo = parseInt(timeframe) || 24;
+    const fromDate = new Date(Date.now() - (hoursAgo * 60 * 60 * 1000));
+    const dateString = fromDate.toISOString().split('T')[0]; // Format: YYYY-MM-DD
+    params.append('from', dateString);
+  }
 
   // Add language filter
   params.append('language', 'en');
